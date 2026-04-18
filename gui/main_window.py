@@ -30,84 +30,46 @@ class StreamerWindow(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
-        self.video_display = QLabel("HAGA DOBLE CLIC PARA FULLSCREEN")
+        self.video_display = QLabel("")
         self.video_display.setAlignment(Qt.AlignCenter)
-        self.video_display.setStyleSheet("color: #111;") # Texto casi invisible sobre negro
+        self.video_display.setStyleSheet("color: #333;") # Texto casi invisible sobre negro
         self.layout.addWidget(self.video_display)
 
         # --- OVERLAY DE CARGA NEÓN (Optimizado con Animación de Opacidad) ---
         self.loader_panel = QFrame(self.central_widget)
         self.loader_panel.setGeometry(0, 0, 1280, 720)
-        self.loader_panel.setStyleSheet("""
-            background: qradialgradient(cx:0.5, cy:0.5, radius:0.5,
-                stop:0 rgba(0, 0, 0, 240),
-                stop:1 rgba(0, 20, 40, 200));
-            border: 2px solid #00d4ff;
-            border-radius: 10px;
-        """)
+        self.loader_panel.setStyleSheet("background-color: rgba(0, 0, 0, 200);")
         self.loader_panel.hide()
         
         l_layout = QVBoxLayout(self.loader_panel)
-        self.loader_text = QLabel("⏳ Cargando video...")
-        self.loader_text.setStyleSheet("""
-            color: #00d4ff; 
-            font-size: 26px; 
-            font-weight: bold;
-        """)
+        self.loader_text = QLabel("Cargando...")
+        self.loader_text.setStyleSheet("color: #aaa; font-size: 18px; font-weight: normal;")
         self.loader_text.setAlignment(Qt.AlignCenter)
         l_layout.addWidget(self.loader_text)
         
-        # Spinner para loading
-        self.spinner_timer = QTimer()
-        self.spinner_timer.timeout.connect(self.animate_spinner)
-        self.spinner_dots = 0
+        # Animación de respiración fluida
+        self.glow = QPropertyAnimation(self.loader_text, b"windowOpacity")
+        self.glow.setDuration(1500)
+        self.glow.setStartValue(0.5)
+        self.glow.setEndValue(1.0)
+        self.glow.setLoopCount(-1)
+        self.glow.setEasingCurve(QEasingCurve.InOutQuad)
 
         # --- BARRA DE CONTROL FLOTANTE (ESTILO "HUD") ---
         self.controls = QFrame(self.central_widget)
-        self.controls.setFixedHeight(60)
-        self.controls.setFixedWidth(850)
+        self.controls.setFixedHeight(50)
+        self.controls.setFixedWidth(700)
         self.controls.setStyleSheet("""
             QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(10, 10, 10, 220),
-                    stop:1 rgba(20, 20, 20, 240));
-                border: 1px solid #00d4ff;
-                border-top: none;
-                border-bottom-left-radius: 15px;
-                border-bottom-right-radius: 15px;
+                background-color: rgba(20, 20, 20, 180);
+                border: none;
+                border-bottom-left-radius: 8px;
+                border-bottom-right-radius: 8px;
             }
-            QLabel { color: #ccc; font-size: 11px; font-weight: bold; border: none; }
-            QComboBox { 
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2a2a2a, stop:1 #1a1a1a);
-                color: white; 
-                border: 1px solid #444; 
-                border-radius: 4px;
-                padding: 2px;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox::down-arrow { image: url(down_arrow.png); }
-            QPushButton { 
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #00d4ff, stop:1 #0099cc);
-                color: black; 
-                font-weight: bold; 
-                border-radius: 6px;
-                border: 1px solid #00aaff;
-            }
-            QPushButton:hover { background: #00aaff; }
-            QSlider::groove:horizontal {
-                background: #333;
-                height: 4px;
-                border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
-                background: #00d4ff;
-                width: 12px;
-                height: 12px;
-                border-radius: 6px;
-                margin: -4px 0;
-            }
+            QLabel { color: #ccc; font-size: 9px; border: none; }
+            QComboBox { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 3px; }
+            QPushButton { background: #555; color: #fff; font-weight: normal; border-radius: 3px; }
+            QPushButton:hover { background: #666; }
         """)
         
         c_layout = QHBoxLayout(self.controls)
@@ -155,14 +117,8 @@ class StreamerWindow(QMainWindow):
         self.controls.move((self.width() - self.controls.width()) // 2, 0)
         self.loader_panel.resize(self.size())
 
-    def animate_spinner(self):
-        self.spinner_dots = (self.spinner_dots + 1) % 4
-        dots = "." * self.spinner_dots
-        self.loader_text.setText(f"⏳ Cargando video{dots}")
-        self.loader_text.update()
-
     def start_sync(self):
-        self.stop_session()  # Ya incluye wait
+        self.stop_session()
         # Reset de audio para evitar el "delay acumulado" de PortAudio
         sd._terminate(); sd._initialize()
         
@@ -171,12 +127,10 @@ class StreamerWindow(QMainWindow):
         
         try:
             v_idx = self.video_combo.currentIndex()
-            # Lógica de audio automática simplificada
-            a_idx = 0 
-            for i, d in enumerate(sd.query_devices()):
-                if d['max_input_channels'] > 0 and ("USB" in d['name'].upper() or "DIGITAL" in d['name'].upper()):
-                    a_idx = i
-                    break
+            
+            # NUEVA LÓGICA: Sincronización por Hardware ID
+            from core.audio_sync import find_audio_by_hw_id
+            a_idx = find_audio_by_hw_id(v_idx)
 
             self.v_engine = VideoEngine(device_index=v_idx)
             self.v_engine.video_ready_signal.connect(self.on_hardware_ready)
@@ -188,14 +142,14 @@ class StreamerWindow(QMainWindow):
             self.a_engine.start()
             
             self.loader_panel.show()
-            self.spinner_timer.start(500)  # Animar cada 500ms
+            self.glow.start()
             self.hide_bar()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
     def on_hardware_ready(self):
-        self.spinner_timer.stop()
+        self.glow.stop()
         self.loader_panel.hide()
         if self.a_engine: self.a_engine.set_video_ready()
 
@@ -227,16 +181,9 @@ class StreamerWindow(QMainWindow):
         self.video_display.setPixmap(QPixmap.fromImage(qimg))
 
     def stop_session(self):
-        if self.v_engine: 
-            self.v_engine.stop()
-            self.v_engine.wait(2000)
-            self.v_engine = None
-        if self.a_engine: 
-            self.a_engine.stop()
-            self.a_engine.wait(2000)
-            self.a_engine = None
+        if self.v_engine: self.v_engine.stop(); self.v_engine = None
+        if self.a_engine: self.a_engine.stop(); self.a_engine = None
         self.loader_panel.hide()
-        self.spinner_timer.stop()
         self.video_display.setPixmap(QPixmap())
         self.show_bar()
 
@@ -275,3 +222,7 @@ class StreamerWindow(QMainWindow):
     def resizeEvent(self, event):
         self.reposition_ui()
         super().resizeEvent(event)
+
+    def closeEvent(self, event):
+        self.stop_session()
+        event.accept()

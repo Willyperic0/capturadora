@@ -50,7 +50,9 @@ class AudioEngine(QThread):
             # Reset atómico del buffer antes de inicializar
             self.reset_buffer()
             
-            # Buffer circular usando NumPy (mucho más rápido que deque)
+            self._start_stream()
+            
+            # Buffer circular usando NumPy (mucho más rápido que deque) - después de conocer los canales
             self.delay_samples = int((self.delay_ms / 1000) * self.sample_rate)
             # Reservamos espacio para 2 segundos de buffer para evitar overflows
             self.buffer_size = self.sample_rate * 2 
@@ -59,7 +61,6 @@ class AudioEngine(QThread):
             self.write_ptr = self.delay_samples % self.buffer_size
             self.read_ptr = 0
             
-            self._start_stream()
             self.running = True
             print(f"AUDIO_START: Dispositivo={device_name}, ID={self.device_index}, Canales={self.channels}")
             self.started_signal.emit()
@@ -121,9 +122,10 @@ class AudioEngine(QThread):
                 
                 self.read_ptr = (self.read_ptr + frames) % self.buffer_size
 
-                # Audio siempre activo, no espera video
-                # if not self.is_video_ready:
-                #     outdata.fill(0)
+                # Esperar a que el video esté listo para sincronizar
+                if not self.is_video_ready:
+                    outdata.fill(0)
+                    return
             finally:
                 self.mutex.unlock()
 
@@ -169,8 +171,8 @@ class AudioEngine(QThread):
             except:
                 pass
         self.wait()
-            self.stream = None
-        sd.stop()  # Parada global de emergencia
+        self.stream = None
+        # sd.stop()  # Parada global de emergencia - removido para evitar conflictos
         # Forzar liberación de drivers USB
         try:
             sd._terminate()
