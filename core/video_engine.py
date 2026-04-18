@@ -1,38 +1,64 @@
 # /core/video_engine.py
 import cv2
+import time
+from PySide6.QtCore import QThread, Signal
 
-class VideoEngine:
-    def __init__(self, device_index=None):
-        # Si no le pasamos un ID, intentamos buscar uno automáticamente
-        if device_index is None:
-            self.device_index = self._find_last_device()
-        else:
-            self.device_index = device_index
-            
-        self.cap = cv2.VideoCapture(self.device_index)
+class VideoEngine(QThread):
+    # Definimos señales para comunicar con la GUI
+    new_frame_signal = Signal(object)
+    error_signal = Signal(str)
+    started_signal = Signal()
+    video_ready_signal = Signal()  # Señal cuando el primer frame está listo
+
+    def __init__(self, device_index=0):
+        super().__init__()
+        self.device_index = device_index
+        self.cap = None
+        self.running = False
+        self.first_frame_sent = False
         
-        # Ajustes de ingeniería para latencia cero
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.cap.set(cv2.CAP_PROP_FPS, 60)
-        # Forzar resolución estándar de capturadora
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    def run(self):
+        """Inicialización y loop en hilo separado para evitar bloqueo de UI"""
+        try:
+            self.cap = cv2.VideoCapture(self.device_index)
+            if not self.cap.isOpened():
+                self.error_signal.emit("No se pudo abrir la capturadora de video")
+                return
+            
+            # Optimizaciones de hardware
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.cap.set(cv2.CAP_PROP_FPS, 60)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+            
+            self.running = True
+            self.started_signal.emit()
+            
+            # Para el futuro Auto-Sync
+            self.last_change_timestamp = 0
+            
+            while self.running:
+                ret, frame = self.cap.read()
+                if ret:
+                    if not self.first_frame_sent:
+                        self.video_ready_signal.emit()
+                        self.first_frame_sent = True
+                    self.last_change_timestamp = time.time()
+                    # Enviamos el frame a la GUI
+                    self.new_frame_signal.emit(frame)
+                else:
+                    time.sleep(0.01)
+        except Exception as e:
+            self.error_signal.emit(f"Error en VideoEngine: {str(e)}")
+        finally:
+            self._cleanup()
 
-    def _find_last_device(self):
-        last_found = 0
-        for i in range(5):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                cap.release()
-                last_found = i
-        return last_found
+    def stop(self):
+        self.running = False
+        self.wait()  # Esperamos a que el hilo termine limpiamente
+        self.first_frame_sent = False
 
-    def get_frame(self):
-        ret, frame = self.cap.read()
-        if not ret:
-            return None
-        return frame
-
-    def release(self):
-        if self.cap.isOpened():
+    def _cleanup(self):
+        if self.cap and self.cap.isOpened():
             self.cap.release()
+            self.cap = None
