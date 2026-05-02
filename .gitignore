@@ -18,6 +18,9 @@ dist/
 *.tmp
 *.cache
 
+# Application logs
+logs/
+
 # Local configuration and secrets
 config.json
 .env
