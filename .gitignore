@@ -1,4 +1,42 @@
 .venv/
+venv/
+ENV/
+env/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+*.exe
+*.dll
+*.pyd
+*.manifest
+*.log
+*.tmp
+*.cache
+
+# Local configuration and secrets
 config.json
+.env
+.env.*
+
+# Dependency metadata
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+
+# IDE/editor
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+Icon?
