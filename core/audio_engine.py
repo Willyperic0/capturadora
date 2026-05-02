@@ -3,19 +3,20 @@ import sounddevice as sd
 import numpy as np
 import time
 import os
+import platform
 import threading
-from PySide6.QtCore import QThread, Signal, QMutex
+from PySide6.QtCore import QThread, Signal as qtSignal, QMutex  # pylint: disable=no-name-in-module
 import core.logger  # Importar para configurar el logger
 import logging
 
 logger = logging.getLogger(__name__)
 
 class AudioEngine(QThread):
-    error_signal = Signal(str)
-    started_signal = Signal()
-    audio_callback_interval_signal = Signal(float)
-    audio_jitter_signal = Signal(float)
-    buffer_level_signal = Signal(float)
+    error_signal = qtSignal(str)
+    started_signal = qtSignal()
+    audio_callback_interval_signal = qtSignal(float)
+    audio_jitter_signal = qtSignal(float)
+    buffer_level_signal = qtSignal(float)
 
     def __init__(self, device_index, delay_ms=0):
         super().__init__()
@@ -36,6 +37,11 @@ class AudioEngine(QThread):
         self.ring_buffer = np.zeros((self.buffer_size, self.channels), dtype='float32')
         self._max_jitter = 0.0
         self._jitter_spike_count = 0
+        self.priority_status = "Estándar"
+        self._telemetry_last_log_time = time.time()
+        self.current_audio_time_ms = 0.0
+        self._audio_time_mutex = QMutex()
+        self._audio_clock_log_last_time = time.time()
 
     def set_video_ready(self):
         """Señal para indicar que el video está listo y el audio puede empezar"""
@@ -53,9 +59,27 @@ class AudioEngine(QThread):
         finally:
             self.mutex.unlock()
 
+    def reset_audio_time(self):
+        """Reset del contador de tiempo de audio para sincronización"""
+        self._audio_time_mutex.lock()
+        try:
+            self.current_audio_time_ms = 0.0
+            logger.debug("Audio time reset to 0.0ms")
+        finally:
+            self._audio_time_mutex.unlock()
+
+    def get_current_audio_time_ms(self):
+        """Retorna el tiempo actual de audio en ms de forma thread-safe"""
+        self._audio_time_mutex.lock()
+        try:
+            return float(self.current_audio_time_ms)
+        finally:
+            self._audio_time_mutex.unlock()
+
     def run(self):
         """Inicialización y ejecución en hilo separado"""
-        self._set_thread_priority()
+        self.priority_status = self._apply_high_priority()
+        logger.info("AudioEngine prioridad: %s", self.priority_status)
         try:
             devices = sd.query_devices()
             if self.device_index < 0 or self.device_index >= len(devices) or devices[self.device_index]['max_input_channels'] == 0:
@@ -112,6 +136,17 @@ class AudioEngine(QThread):
                 logger.debug(f"Audio Status: {status}")
 
             now = time.time()
+            delta_audio_ms = (frames / self.sample_rate) * 1000.0
+            self._audio_time_mutex.lock()
+            try:
+                self.current_audio_time_ms += delta_audio_ms
+                # Log de verificación de reloj cada 2 segundos
+                if now - self._audio_clock_log_last_time >= 2.0:
+                    logger.debug("Audio clock updated: current=%.2f ms", self.current_audio_time_ms)
+                    self._audio_clock_log_last_time = now
+            finally:
+                self._audio_time_mutex.unlock()
+
             if self._last_callback_time is not None:
                 interval_ms = (now - self._last_callback_time) * 1000.0
                 expected_ms = (frames / self.sample_rate) * 1000.0
@@ -123,7 +158,10 @@ class AudioEngine(QThread):
                 # Detección de picos de jitter críticos (>30ms)
                 if jitter_ms > 30.0:
                     self._jitter_spike_count += 1
-                    logger.warning(f"Audio Jitter CRITICO (SPIKE): {jitter_ms:.2f}ms (Evento #{self._jitter_spike_count})")
+                    logger.warning("Audio Jitter CRITICO (SPIKE): %.2fms (Evento #%d)", jitter_ms, self._jitter_spike_count)
+                if now - self._telemetry_last_log_time >= 10.0:
+                    logger.debug("Audio Telemetría: Máximo jitter=%.2fms, Spikes=%d, Intervalo actual=%.2fms", self._max_jitter, self._jitter_spike_count, interval_ms)
+                    self._telemetry_last_log_time = now
             self._last_callback_time = now
 
             self.mutex.lock()
@@ -217,35 +255,57 @@ class AudioEngine(QThread):
                 pass
             self.stream = None
 
-    def _set_thread_priority(self):
-        """Elevar la prioridad del hilo de audio para reducir latencia."""
-        try:
-            if os.name == 'nt':  # Windows
-                try:
-                    import ctypes
-                    thread_id = threading.current_thread().ident
-                    logger.debug(f"Elevando prioridad del hilo de audio (Windows, thread_id={thread_id})")
-                    # En Windows, intentar establecer HIGH_PRIORITY_CLASS
-                    try:
-                        # SetThreadPriority: -2 = current thread, 4 = THREAD_PRIORITY_HIGHEST
-                        ctypes.windll.kernel32.SetThreadPriority(-2, 4)
-                        logger.info("Prioridad de hilo de audio elevada a THREAD_PRIORITY_HIGHEST (Windows)")
-                    except:
-                        logger.debug("No se pudo establecer prioridad HIGH en Windows")
-                except Exception as e:
-                    logger.debug(f"No se puede elevar prioridad en Windows: {e}")
-            else:  # Linux/macOS
+    def _apply_high_priority(self):
+        """Aplicar prioridad alta según plataforma usando wrappers dinámicos."""
+        system = platform.system()
+
+        if system == "Windows":
+            try:
+                import win32process
+                import win32con
+                proc = win32process.GetCurrentProcess()
+                win32process.SetPriorityClass(proc, win32con.HIGH_PRIORITY_CLASS)
+                logger.info("Prioridad de proceso Windows elevada a HIGH_PRIORITY_CLASS")
+                return "Alta (Win32)"
+            except ImportError as exc:
+                logger.warning("pywin32 no disponible; intentando ctypes para elevar prioridad en Windows: %s", exc)
+                priority_error = "ImportError"
+            except Exception as exc:
+                logger.warning("No se pudo elevar prioridad en Windows: %s", exc)
+                return f"Estándar (Windows error: {exc})"
+
+            try:
+                import ctypes
+                hthread = ctypes.windll.kernel32.GetCurrentThread()
+                THREAD_PRIORITY_HIGHEST = 2
+                if not ctypes.windll.kernel32.SetThreadPriority(hthread, THREAD_PRIORITY_HIGHEST):
+                    raise OSError("SetThreadPriority falló")
+                logger.info("Prioridad de hilo elevada en Windows mediante ctypes")
+                return "Alta (ctypes)"
+            except Exception as exc:
+                logger.warning("No se pudo elevar prioridad de hilo en Windows mediante ctypes: %s", exc)
+                return f"Estándar (Windows ctypes error: {exc})"
+
+        elif system in ("Linux", "Darwin"):
+            setpriority = getattr(os, "setpriority", None)
+            prio_process = getattr(os, "PRIO_PROCESS", None)
+            if callable(setpriority) and prio_process is not None:
                 try:
                     pid = os.getpid()
-                    # Establecer nice = -10 (requiere permisos)
-                    os.setpriority(os.PRIO_PROCESS, pid, -10)
-                    logger.info("Prioridad de proceso de audio elevada (Linux/macOS, nice=-10)")
-                except PermissionError:
-                    logger.warning("Sin permisos de administrador para establecer prioridad de audio. Continuando sin elevacion.")
-                except Exception as e:
-                    logger.debug(f"No se puede elevar prioridad: {e}")
-        except Exception as e:
-            logger.debug(f"Error al intentar elevar prioridad de audio: {e}")
+                    setpriority(prio_process, pid, -10)
+                    logger.info("Prioridad de proceso elevada en %s (nice=-10)", system)
+                    return "Alta (Unix)"
+                except PermissionError as exc:
+                    logger.warning("Sin permisos para establecer prioridad alta en %s: %s", system, exc)
+                    return "Estándar (PermissionError)"
+                except Exception as exc:
+                    logger.warning("No se pudo elevar prioridad en %s: %s", system, exc)
+                    return f"Estándar ({system} error: {exc})"
+            logger.warning("setpriority no disponible en esta plataforma %s", system)
+            return "Estándar (no disponible)"
+        else:
+            logger.info("Gestión de prioridad no soportada en plataforma %s", system)
+            return "Estándar (no soportado)"
 
     def _find_device_smart(self, name):
         devices = sd.query_devices()

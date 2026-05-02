@@ -51,6 +51,7 @@ class SyncManager(QObject):
         self.video_engine.capture_fps_signal.connect(self._on_capture_fps)
 
         self.audio_engine = AudioEngine(device_index=audio_index, delay_ms=delay_ms)
+        self.video_engine.set_audio_engine(self.audio_engine)
         self.audio_engine.started_signal.connect(self._on_audio_started)
         self.audio_engine.error_signal.connect(self._on_error)
         self.audio_engine.audio_jitter_signal.connect(self._on_audio_jitter)
@@ -64,7 +65,10 @@ class SyncManager(QObject):
         if self._session_start_time:
             duration = time.time() - self._session_start_time
             avg_fps = self._total_frames / duration if duration > 0 else 0
-            logger.info(f"Resumen de Auditoría: Duración total={duration:.2f}s, FPS promedio de captura={avg_fps:.2f}, Máximo jitter registrado={self._max_jitter:.2f}ms")
+            priority_state = "Estándar"
+            if self.audio_engine is not None:
+                priority_state = getattr(self.audio_engine, "priority_status", "Estándar")
+            logger.info("Resumen de Auditoría: Duración total=%.2fs, FPS promedio de captura=%.2f, Máximo jitter registrado=%.2fms, Prioridad de audio=%s", duration, avg_fps, self._max_jitter, priority_state)
             self._session_start_time = None
 
         if self.video_engine:

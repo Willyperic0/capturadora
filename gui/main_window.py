@@ -184,6 +184,19 @@ class StreamerWindow(QMainWindow):
         """Procesamiento ultra-optimizado"""
         if frame is None:
             return
+
+        frame_data = frame
+        timestamp_audio_ref = None
+        frame_index = None
+
+        if isinstance(frame, dict):
+            frame_data = frame.get('frame_data', None)
+            timestamp_audio_ref = frame.get('timestamp_audio_ref', None)
+            frame_index = frame.get('frame_index', None)
+
+        if frame_data is None:
+            return
+
         w, h = self.video_display.width(), self.video_display.height()
         if w <= 0 or h <= 0:
             return
@@ -193,11 +206,11 @@ class StreamerWindow(QMainWindow):
             self.cached_canvas = np.zeros((h, w, 3), dtype=np.uint8)
 
         canvas = self.cached_canvas.copy()
-        f_h, f_w = frame.shape[:2]
+        f_h, f_w = frame_data.shape[:2]
         aspect = f_w / f_h
         nw, nh = (int(h * aspect), h) if w / h > aspect else (w, int(w / aspect))
 
-        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(frame_data, (nw, nh), interpolation=cv2.INTER_LINEAR)
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
         xo, yo = (w - nw) // 2, (h - nh) // 2
@@ -205,6 +218,9 @@ class StreamerWindow(QMainWindow):
 
         qimg = QImage(canvas.data, w, h, w * 3, QImage.Format_RGB888)
         self.video_display.setPixmap(QPixmap.fromImage(qimg))
+
+        if timestamp_audio_ref is not None or frame_index is not None:
+            logger.debug("Render Frame payload: index=%s, audio_ref=%.2f", str(frame_index), float(timestamp_audio_ref) if timestamp_audio_ref is not None else 0.0)
 
         now = time.time()
         self._render_frame_count += 1
